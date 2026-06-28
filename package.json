@@ -1,5 +1,5 @@
 {
-  "name": "seensms-nakrutka-bot",
+  "name": "seensms-bot",
   "version": "1.0.0",
   "main": "bot.js",
   "scripts": {
@@ -9,7 +9,6 @@
     "node-telegram-bot-api": "^0.64.0",
     "mongoose": "^8.3.0",
     "express": "^4.19.2",
-    "axios": "^1.7.2",
     "dotenv": "^16.4.5"
   },
   "engines": {
