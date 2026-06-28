@@ -1,0 +1,21 @@
+{
+  "name": "seensms-nakrutka-bot",
+  "version": "1.0.0",
+  "description": "SeenSMS SMM Telegram Bot — MongoDB + Render",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "nodemon bot.js"
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.64.0",
+    "mongoose": "^8.3.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
