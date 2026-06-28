@@ -1,162 +1,216 @@
 /**
- * Database — SQLite (faylga asoslangan, o'rnatish shart emas)
- * npm install better-sqlite3
+ * Database — MongoDB (Render + MongoDB Atlas uchun)
+ * npm install mongoose
  */
 
-const Database = require('better-sqlite3');
-const path = require('path');
+const mongoose = require('mongoose');
 
-const db = new Database(path.join(__dirname, 'bot.db'));
+let isConnected = false;
 
-// Jadvallar yaratish
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY,
-    user_id INTEGER UNIQUE,
-    username TEXT,
-    first_name TEXT,
-    balance REAL DEFAULT 0,
-    state TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+async function connect() {
+  if (isConnected) return;
+  await mongoose.connect(process.env.MONGODB_URI, {
+    serverSelectionTimeoutMS: 5000,
+  });
+  isConnected = true;
+  console.log('✅ MongoDB ulandi');
+}
 
-  CREATE TABLE IF NOT EXISTS orders (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    api_order_id TEXT,
-    service_id TEXT,
-    service_name TEXT,
-    link TEXT,
-    quantity INTEGER,
-    cost REAL,
-    status TEXT DEFAULT 'Pending',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+mongoose.connection.on('disconnected', () => {
+  isConnected = false;
+  console.log('⚠️ MongoDB uzildi, qayta ulanmoqda...');
+  setTimeout(connect, 3000);
+});
 
-  CREATE TABLE IF NOT EXISTS payments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    amount REAL,
-    method TEXT,
-    status TEXT DEFAULT 'pending',
-    payload TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+// ============================================================
+// SCHEMALAR
+// ============================================================
 
-  CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value TEXT
-  );
-`);
+const UserSchema = new mongoose.Schema({
+  user_id:    { type: Number, unique: true, required: true },
+  username:   { type: String, default: null },
+  first_name: { type: String, default: '' },
+  balance:    { type: Number, default: 0 },
+  state:      { type: mongoose.Schema.Types.Mixed, default: null },
+  created_at: { type: Date, default: Date.now },
+});
 
+const OrderSchema = new mongoose.Schema({
+  user_id:      { type: Number, required: true },
+  api_order_id: { type: String, default: null },
+  service_id:   { type: String },
+  service_name: { type: String },
+  link:         { type: String },
+  quantity:     { type: Number },
+  cost:         { type: Number },
+  status:       { type: String, default: 'Pending' },
+  created_at:   { type: Date, default: Date.now },
+});
+
+const PaymentSchema = new mongoose.Schema({
+  user_id:    { type: Number, required: true },
+  amount:     { type: Number },
+  method:     { type: String },
+  status:     { type: String, default: 'pending' },
+  payload:    { type: String },
+  created_at: { type: Date, default: Date.now },
+});
+
+const SettingSchema = new mongoose.Schema({
+  key:   { type: String, unique: true },
+  value: { type: String },
+});
+
+const User    = mongoose.model('User',    UserSchema);
+const Order   = mongoose.model('Order',   OrderSchema);
+const Payment = mongoose.model('Payment', PaymentSchema);
+const Setting = mongoose.model('Setting', SettingSchema);
+
+// ============================================================
+// FUNKSIYALAR
+// ============================================================
 module.exports = {
+  connect,
+
   // ---- FOYDALANUVCHILAR ----
-  addUser(userId, username, firstName) {
-    db.prepare(`
-      INSERT OR IGNORE INTO users (user_id, username, first_name)
-      VALUES (?, ?, ?)
-    `).run(userId, username, firstName);
+  async addUser(userId, username, firstName) {
+    await connect();
+    await User.updateOne(
+      { user_id: userId },
+      { $setOnInsert: { user_id: userId, username, first_name: firstName } },
+      { upsert: true }
+    );
   },
 
-  getUser(userId) {
-    return db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
+  async getUser(userId) {
+    await connect();
+    return User.findOne({ user_id: userId }).lean();
   },
 
-  getUserBalance(userId) {
-    const user = db.prepare('SELECT balance FROM users WHERE user_id = ?').get(userId);
+  async getUserBalance(userId) {
+    await connect();
+    const user = await User.findOne({ user_id: userId }, 'balance').lean();
     return user?.balance || 0;
   },
 
-  addBalance(userId, amount) {
-    db.prepare('UPDATE users SET balance = balance + ? WHERE user_id = ?').run(amount, userId);
+  async addBalance(userId, amount) {
+    await connect();
+    await User.updateOne({ user_id: userId }, { $inc: { balance: amount } });
   },
 
-  deductBalance(userId, amount) {
-    db.prepare('UPDATE users SET balance = balance - ? WHERE user_id = ?').run(amount, userId);
+  async deductBalance(userId, amount) {
+    await connect();
+    await User.updateOne({ user_id: userId }, { $inc: { balance: -amount } });
   },
 
-  getAllUsers() {
-    return db.prepare('SELECT user_id FROM users').all();
+  async getAllUsers() {
+    await connect();
+    return User.find({}, 'user_id').lean();
   },
 
-  getUserOrdersCount(userId) {
-    const res = db.prepare('SELECT COUNT(*) as cnt FROM orders WHERE user_id = ?').get(userId);
-    return res?.cnt || 0;
+  async getUserOrdersCount(userId) {
+    await connect();
+    return Order.countDocuments({ user_id: userId });
   },
 
-  getUserTotalSpent(userId) {
-    const res = db.prepare('SELECT SUM(cost) as total FROM orders WHERE user_id = ?').get(userId);
-    return res?.total || 0;
+  async getUserTotalSpent(userId) {
+    await connect();
+    const res = await Order.aggregate([
+      { $match: { user_id: userId } },
+      { $group: { _id: null, total: { $sum: '$cost' } } }
+    ]);
+    return res[0]?.total || 0;
   },
 
-  // ---- STATE (holat) ----
-  setUserState(userId, state) {
-    db.prepare('UPDATE users SET state = ? WHERE user_id = ?').run(JSON.stringify(state), userId);
+  // ---- STATE ----
+  async setUserState(userId, state) {
+    await connect();
+    await User.updateOne({ user_id: userId }, { $set: { state } });
   },
 
-  getUserState(userId) {
-    const user = db.prepare('SELECT state FROM users WHERE user_id = ?').get(userId);
-    try { return user?.state ? JSON.parse(user.state) : null; }
-    catch { return null; }
+  async getUserState(userId) {
+    await connect();
+    const user = await User.findOne({ user_id: userId }, 'state').lean();
+    return user?.state || null;
   },
 
-  clearUserState(userId) {
-    db.prepare('UPDATE users SET state = NULL WHERE user_id = ?').run(userId);
+  async clearUserState(userId) {
+    await connect();
+    await User.updateOne({ user_id: userId }, { $set: { state: null } });
   },
 
   // ---- BUYURTMALAR ----
-  saveOrder(userId, apiOrderId, serviceId, serviceName, link, quantity, cost) {
-    db.prepare(`
-      INSERT INTO orders (user_id, api_order_id, service_id, service_name, link, quantity, cost)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(userId, apiOrderId, serviceId, serviceName, link, quantity, cost);
+  async saveOrder(userId, apiOrderId, serviceId, serviceName, link, quantity, cost) {
+    await connect();
+    const order = new Order({
+      user_id: userId, api_order_id: apiOrderId,
+      service_id: serviceId, service_name: serviceName,
+      link, quantity, cost
+    });
+    await order.save();
+    return order;
   },
 
-  getUserOrders(userId, limit = 5) {
-    return db.prepare(`
-      SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC LIMIT ?
-    `).all(userId, limit);
+  async getUserOrders(userId, limit = 5) {
+    await connect();
+    return Order.find({ user_id: userId }).sort({ created_at: -1 }).limit(limit).lean();
   },
 
-  getAllOrders(limit = 20) {
-    return db.prepare(`
-      SELECT o.*, u.username, u.first_name
-      FROM orders o LEFT JOIN users u ON o.user_id = u.user_id
-      ORDER BY o.created_at DESC LIMIT ?
-    `).all(limit);
+  async getAllOrders(limit = 20) {
+    await connect();
+    const orders = await Order.find().sort({ created_at: -1 }).limit(limit).lean();
+    for (const o of orders) {
+      const user = await User.findOne({ user_id: o.user_id }, 'username first_name').lean();
+      o.username   = user?.username;
+      o.first_name = user?.first_name;
+    }
+    return orders;
   },
 
   // ---- TO'LOVLAR ----
-  savePayment(userId, amount, method, payload) {
-    const res = db.prepare(`
-      INSERT INTO payments (user_id, amount, method, payload)
-      VALUES (?, ?, ?, ?)
-    `).run(userId, amount, method, payload);
-    return res.lastInsertRowid;
+  async savePayment(userId, amount, method, payload) {
+    await connect();
+    const payment = new Payment({ user_id: userId, amount, method, payload });
+    await payment.save();
+    return payment._id.toString();
   },
 
-  updatePaymentStatus(paymentId, status) {
-    db.prepare('UPDATE payments SET status = ? WHERE id = ?').run(status, paymentId);
+  async updatePaymentStatus(paymentId, status) {
+    await connect();
+    await Payment.updateOne({ _id: paymentId }, { $set: { status } });
   },
 
   // ---- STATISTIKA ----
-  getStats() {
-    const users = db.prepare('SELECT COUNT(*) as cnt FROM users').get()?.cnt || 0;
-    const orders = db.prepare('SELECT COUNT(*) as cnt FROM orders').get()?.cnt || 0;
-    const revenue = db.prepare('SELECT SUM(cost) as total FROM orders').get()?.total || 0;
-    const todayOrders = db.prepare(`
-      SELECT COUNT(*) as cnt FROM orders
-      WHERE date(created_at) = date('now')
-    `).get()?.cnt || 0;
-    return { users, orders, revenue, today_orders: todayOrders };
+  async getStats() {
+    await connect();
+    const [users, orders, revenueRes, todayOrders] = await Promise.all([
+      User.countDocuments(),
+      Order.countDocuments(),
+      Order.aggregate([{ $group: { _id: null, total: { $sum: '$cost' } } }]),
+      Order.countDocuments({
+        created_at: {
+          $gte: new Date(new Date().setHours(0, 0, 0, 0)),
+          $lt:  new Date(new Date().setHours(23, 59, 59, 999)),
+        }
+      }),
+    ]);
+    return {
+      users,
+      orders,
+      revenue:      revenueRes[0]?.total || 0,
+      today_orders: todayOrders,
+    };
   },
 
   // ---- SOZLAMALAR ----
-  getSetting(key) {
-    return db.prepare('SELECT value FROM settings WHERE key = ?').get(key)?.value;
+  async getSetting(key) {
+    await connect();
+    const s = await Setting.findOne({ key }).lean();
+    return s?.value || null;
   },
 
-  setSetting(key, value) {
-    db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value);
+  async setSetting(key, value) {
+    await connect();
+    await Setting.updateOne({ key }, { $set: { value } }, { upsert: true });
   },
 };
